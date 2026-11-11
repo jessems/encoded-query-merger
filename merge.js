@@ -1,11 +1,10 @@
-// Encoded Query Merger: combine two ServiceNow encoded queries with a top-level OR.
+// Encoded Query Merger: combine any number of ServiceNow encoded queries with a top-level OR.
 //
 // Why not just `A^ORB`? In an encoded query, `^OR` binds only to the condition
-// right before it, so `a^b^ORc^d` means `a AND (b OR c) AND d`. Gluing two
+// right before it, so `a^b^ORc^d` means `a AND (b OR c) AND d`. Gluing
 // queries together with `^OR` silently changes their meaning. `^NQ` ("new
 // query") is the only operator that ORs whole queries, so the merged result is
-// every NQ block of A followed by every NQ block of B, with sort clauses moved
-// to the end.
+// every NQ block of every query, in order, with sort clauses moved to the end.
 
 const SORT_PREFIXES = ["ORDERBYDESC", "ORDERBY", "GROUPBY"];
 
@@ -122,21 +121,27 @@ function render(blocks, sort) {
   return [blocks.map((b) => b.join("^")).join("^NQ"), ...sort].filter((s) => s !== "").join("^");
 }
 
-export function merge(a, b) {
-  const left = parse(a);
-  const right = parse(b);
-  const errors = [
-    ...left.errors.map((e) => `Query A: ${e}`),
-    ...right.errors.map((e) => `Query B: ${e}`),
-  ];
-  const notes = [...new Set([...left.warnings, ...right.warnings])];
+// Query names shown in messages: A, B, ..., Z, AA, AB, ...
+export function queryName(index) {
+  let name = "";
+  for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) {
+    name = String.fromCharCode(65 + ((n - 1) % 26)) + name;
+  }
+  return name;
+}
+
+// `names` labels each query in messages; defaults to A, B, C, ...
+export function merge(queries, names = queries.map((_, i) => queryName(i))) {
+  const parsed = queries.map((q, i) => ({ name: names[i], ...parse(q) }));
+  const errors = parsed.flatMap((p) => p.errors.map((e) => `Query ${p.name}: ${e}`));
+  const notes = [...new Set(parsed.flatMap((p) => p.warnings))];
 
   if (errors.length) return { result: null, errors, notes, blocks: [] };
 
-  // Keep the first sort clause per field; A wins over B on conflicts.
+  // Keep the first sort clause per field; earlier queries win on conflicts.
   const sort = [];
   const seenFields = new Set();
-  for (const clause of [...left.sort, ...right.sort]) {
+  for (const clause of parsed.flatMap((p) => p.sort)) {
     const field = sortField(clause);
     if (seenFields.has(field)) {
       if (!sort.includes(clause)) notes.push(`Dropped "${clause}": "${field}" is already sorted by an earlier clause.`);
@@ -146,16 +151,15 @@ export function merge(a, b) {
     sort.push(clause);
   }
 
-  for (const [name, side] of [["A", left], ["B", right]]) {
-    if (side.blocks.length === 0) {
-      notes.push(`Query ${name} has no conditions, so it matches every record — and so does the merged query.`);
-      return { result: render([], sort), errors, notes, blocks: [] };
-    }
+  const matchAll = parsed.find((p) => p.blocks.length === 0);
+  if (matchAll) {
+    notes.push(`Query ${matchAll.name} has no conditions, so it matches every record — and so does the merged query.`);
+    return { result: render([], sort), errors, notes, blocks: [] };
   }
 
   const blocks = [];
   const seen = new Set();
-  for (const block of [...left.blocks, ...right.blocks]) {
+  for (const block of parsed.flatMap((p) => p.blocks)) {
     const key = block.join("^");
     if (seen.has(key)) {
       notes.push(`Removed duplicate block "${key}".`);

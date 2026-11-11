@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { merge, normalize } from "./merge.js";
+import { merge, normalize, queryName } from "./merge.js";
 
-const result = (a, b) => merge(a, b).result;
+const result = (...queries) => merge(queries).result;
 
 test("simple queries become two NQ blocks", () => {
   assert.equal(result("active=true", "priority=1"), "active=true^NQpriority=1");
@@ -19,8 +19,8 @@ test("existing NQ blocks are flattened into one top-level OR", () => {
   assert.equal(result("a=1^NQb=2", "c=3^NQd=4"), "a=1^NQb=2^NQc=3^NQd=4");
 });
 
-test("sort clauses move to the end, A wins conflicts", () => {
-  const out = merge("active=true^ORDERBYnumber", "priority=1^ORDERBYDESCnumber^ORDERBYsys_created_on");
+test("sort clauses move to the end, earlier queries win conflicts", () => {
+  const out = merge(["active=true^ORDERBYnumber", "priority=1^ORDERBYDESCnumber^ORDERBYsys_created_on"]);
   assert.equal(out.result, "active=true^NQpriority=1^ORDERBYnumber^ORDERBYsys_created_on");
   assert.match(out.notes.join(), /ORDERBYDESCnumber/);
 });
@@ -54,7 +54,7 @@ test("related-list queries stay intact", () => {
 });
 
 test("an empty query matches everything", () => {
-  const out = merge("", "active=true^ORDERBYnumber");
+  const out = merge(["", "active=true^ORDERBYnumber"]);
   assert.equal(out.result, "ORDERBYnumber");
   assert.match(out.notes.join(), /matches every record/);
 });
@@ -65,6 +65,26 @@ test("invalid queries are rejected", () => {
   assert.equal(result("a=1^ORDERBY", "b=2"), null);
   assert.equal(result("RLQUERYx.y,>=1^a=1", "b=2"), null);
   assert.equal(result("a=1", "=oops"), null);
+});
+
+test("any number of queries are merged in order", () => {
+  assert.equal(
+    result("a=1", "b=2^ORc=3", "d=4^NQe=5", "f=6^ORDERBYnumber"),
+    "a=1^NQb=2^ORc=3^NQd=4^NQe=5^NQf=6^ORDERBYnumber",
+  );
+});
+
+test("a single query passes through", () => {
+  assert.equal(result("active=true^EQ"), "active=true");
+});
+
+test("errors name the query they came from", () => {
+  assert.match(merge(["a=1", "b=2", "^ORc=3"]).errors[0], /^Query C:/);
+  assert.match(merge(["a=1", "^ORc=3"], ["A", "D"]).errors[0], /^Query D:/);
+});
+
+test("query names continue past Z", () => {
+  assert.deepEqual([0, 25, 26, 27, 701, 702].map(queryName), ["A", "Z", "AA", "AB", "ZZ", "AAA"]);
 });
 
 test("URL-encoded queries and list URLs are accepted", () => {

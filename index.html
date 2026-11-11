@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Encoded Query Merger · ServiceNow</title>
-<meta name="description" content="Combine two ServiceNow encoded queries into one query that matches records from either.">
+<meta name="description" content="Combine any number of ServiceNow encoded queries into one query that matches records from any of them.">
 <style>
   :root {
     --bg: #f6f5f1; --panel: #fff; --ink: #1d2321; --muted: #5d6763; --line: #dcdad2;
@@ -30,7 +30,14 @@
   }
   textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
   .field { margin-bottom: 18px; }
-  .or { text-align: center; font: 600 0.8rem var(--mono); color: var(--muted); letter-spacing: 0.1em; margin: -6px 0 8px; }
+  #queries .field + .field::before {
+    content: "OR"; display: block; text-align: center; font: 600 0.8rem var(--mono);
+    color: var(--muted); letter-spacing: 0.1em; margin: -6px 0 8px;
+  }
+  .query-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .remove { background: none; border: none; color: var(--muted); padding: 0 2px 6px; font-weight: 500; }
+  .remove:hover { color: var(--err); }
+  #add { width: 100%; margin-bottom: 28px; border-style: dashed; }
   .output { position: relative; }
   .output textarea { background: var(--note-bg); min-height: 110px; }
   .actions { display: flex; gap: 10px; margin-top: 10px; }
@@ -57,17 +64,10 @@
 <body>
 <main>
   <h1>Encoded Query Merger</h1>
-  <p class="lede">Paste two ServiceNow encoded queries. You get one query that matches any record either of them would match.</p>
+  <p class="lede">Paste two or more ServiceNow encoded queries. You get one query that matches any record any of them would match.</p>
 
-  <div class="field">
-    <label for="a">Query A</label>
-    <textarea id="a" spellcheck="false" placeholder="active=true^priority=1^ORpriority=2^ORDERBYnumber"></textarea>
-  </div>
-  <div class="or">OR</div>
-  <div class="field">
-    <label for="b">Query B</label>
-    <textarea id="b" spellcheck="false" placeholder="assigned_to=javascript:gs.getUserID()^state!=7"></textarea>
-  </div>
+  <div id="queries"></div>
+  <button id="add" class="ghost">+ Add another query</button>
 
   <div class="field output">
     <label for="out">Merged query</label>
@@ -86,8 +86,8 @@
 
   <section class="how">
     <h2>How it works</h2>
-    <p>Why not just join them with <code>^OR</code>? Because in an encoded query <code>^OR</code> only applies to the condition right before it. <code>a^b^ORc^d</code> means <em>a AND (b OR c) AND d</em>, so joining two queries that way quietly changes what they match.</p>
-    <p>The operator that ORs whole queries together is <code>^NQ</code> (new query). The merger splits each input into its <code>^NQ</code> blocks, puts all the blocks one after another, drops exact duplicates, and moves any <code>ORDERBY</code>/<code>GROUPBY</code> clauses to the end. If both queries sort on the same field, Query A's sort wins.</p>
+    <p>Why not just join them with <code>^OR</code>? Because in an encoded query <code>^OR</code> only applies to the condition right before it. <code>a^b^ORc^d</code> means <em>a AND (b OR c) AND d</em>, so joining queries that way quietly changes what they match.</p>
+    <p>The operator that ORs whole queries together is <code>^NQ</code> (new query). The merger splits each input into its <code>^NQ</code> blocks, puts all the blocks one after another, drops exact duplicates, and moves any <code>ORDERBY</code>/<code>GROUPBY</code> clauses to the end. If several queries sort on the same field, the first one's sort wins. Empty fields are ignored.</p>
     <p>You can paste plain queries, URL-encoded ones (<code>%5E</code>), or a whole list URL with <code>sysparm_query=</code>. A trailing <code>^EQ</code> is removed. Escaped carets (<code>^^</code>) inside values are kept as they are.</p>
     <p>Everything runs in your browser. Nothing is sent anywhere.</p>
   </section>
@@ -96,19 +96,65 @@
 </main>
 
 <script type="module">
-  import { merge } from "./merge.js";
+  import { merge, queryName } from "./merge.js";
 
   const $ = (id) => document.getElementById(id);
-  const a = $("a"), b = $("b"), out = $("out"), msgs = $("msgs"), copy = $("copy");
+  const queries = $("queries"), out = $("out"), msgs = $("msgs"), copy = $("copy");
+  const placeholders = [
+    "active=true^priority=1^ORpriority=2^ORDERBYnumber",
+    "assigned_to=javascript:gs.getUserID()^state!=7",
+  ];
+
+  const textareas = () => [...queries.querySelectorAll("textarea")];
+
+  function addQuery(value = "") {
+    const field = document.createElement("div");
+    field.className = "field";
+    field.innerHTML = `
+      <div class="query-head"><label></label><button class="remove" type="button">Remove</button></div>
+      <textarea spellcheck="false"></textarea>`;
+    const textarea = field.querySelector("textarea");
+    textarea.value = value;
+    textarea.addEventListener("input", update);
+    field.querySelector(".remove").addEventListener("click", () => {
+      field.remove();
+      relabel();
+      update();
+    });
+    queries.append(field);
+    relabel();
+    return textarea;
+  }
+
+  function relabel() {
+    const fields = textareas();
+    fields.forEach((textarea, i) => {
+      const field = textarea.closest(".field");
+      textarea.id = `q${i}`;
+      field.querySelector("label").htmlFor = textarea.id;
+      field.querySelector("label").textContent = `Query ${queryName(i)}`;
+      field.querySelector(".remove").hidden = fields.length <= 2;
+      textarea.placeholder = placeholders[i] ?? "";
+    });
+  }
+
+  function reset(values = ["", ""]) {
+    queries.replaceChildren();
+    values.forEach((v) => addQuery(v));
+    update();
+  }
 
   function update() {
     msgs.replaceChildren();
     $("blocks").hidden = true;
     out.value = "";
     copy.disabled = true;
-    if (!a.value.trim() || !b.value.trim()) return;
+    const filled = textareas()
+      .map((t, i) => ({ value: t.value, name: queryName(i) }))
+      .filter((q) => q.value.trim());
+    if (filled.length < 2) return;
 
-    const { result, errors, notes, blocks } = merge(a.value, b.value);
+    const { result, errors, notes, blocks } = merge(filled.map((q) => q.value), filled.map((q) => q.name));
     for (const [cls, list] of [["err", errors], ["note", notes]]) {
       for (const text of list) {
         const li = document.createElement("li");
@@ -132,8 +178,7 @@
     }
   }
 
-  a.addEventListener("input", update);
-  b.addEventListener("input", update);
+  $("add").addEventListener("click", () => addQuery().focus());
 
   copy.addEventListener("click", async () => {
     await navigator.clipboard.writeText(out.value);
@@ -142,16 +187,19 @@
   });
 
   $("example").addEventListener("click", () => {
-    a.value = "active=true^priority=1^ORpriority=2^ORDERBYnumber";
-    b.value = "assigned_to=javascript:gs.getUserID()^state!=7^NQopened_by=javascript:gs.getUserID()^EQ";
-    update();
+    reset([
+      "active=true^priority=1^ORpriority=2^ORDERBYnumber",
+      "assigned_to=javascript:gs.getUserID()^state!=7^NQopened_by=javascript:gs.getUserID()^EQ",
+      "assignment_groupDYNAMICd6435e965f510100a9ad2572f2b47744^ORDERBYDESCsys_updated_on",
+    ]);
   });
 
   $("clear").addEventListener("click", () => {
-    a.value = b.value = "";
-    update();
-    a.focus();
+    reset();
+    textareas()[0].focus();
   });
+
+  reset();
 </script>
 </body>
 </html>
