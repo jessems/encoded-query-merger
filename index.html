@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Encoded Query Merger · ServiceNow</title>
+<meta name="description" content="Combine two ServiceNow encoded queries into one query that matches records from either.">
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #fff; --ink: #1d2321; --muted: #5d6763; --line: #dcdad2;
+    --accent: #1f6f5c; --accent-ink: #fff; --err: #a8322d; --err-bg: #fbeceb; --note-bg: #eef4f1;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141816; --panel: #1c211f; --ink: #e6ebe8; --muted: #9aa5a0; --line: #2f3633;
+      --accent: #5cc0a2; --accent-ink: #0d1412; --err: #f08a83; --err-bg: #2c1b1a; --note-bg: #1a2723;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 20px 64px; }
+  h1 { font-size: 2rem; letter-spacing: -0.02em; margin: 0 0 6px; }
+  .lede { color: var(--muted); margin: 0 0 32px; max-width: 60ch; }
+  label { display: block; font-weight: 600; font-size: 0.9rem; margin-bottom: 6px; }
+  textarea {
+    width: 100%; min-height: 96px; resize: vertical; padding: 12px 14px;
+    font: 14px/1.5 var(--mono); color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; word-break: break-all;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .field { margin-bottom: 18px; }
+  .or { text-align: center; font: 600 0.8rem var(--mono); color: var(--muted); letter-spacing: 0.1em; margin: -6px 0 8px; }
+  .output { position: relative; }
+  .output textarea { background: var(--note-bg); min-height: 110px; }
+  .actions { display: flex; gap: 10px; margin-top: 10px; }
+  button {
+    font: 600 0.9rem system-ui, sans-serif; padding: 9px 16px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+  }
+  button.ghost { background: transparent; color: var(--accent); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  ul.msgs { list-style: none; padding: 0; margin: 12px 0 0; font-size: 0.9rem; }
+  ul.msgs li { padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
+  ul.msgs li.err { background: var(--err-bg); color: var(--err); }
+  ul.msgs li.note { background: var(--note-bg); color: var(--muted); }
+  .blocks { margin-top: 18px; font-size: 0.9rem; color: var(--muted); }
+  .blocks ol { margin: 6px 0 0; padding-left: 22px; }
+  .blocks code { font: 13px var(--mono); color: var(--ink); word-break: break-all; }
+  section.how { margin-top: 48px; border-top: 1px solid var(--line); padding-top: 24px; color: var(--muted); font-size: 0.95rem; }
+  section.how h2 { color: var(--ink); font-size: 1.1rem; }
+  section.how code { font: 13px var(--mono); color: var(--ink); background: var(--panel); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; }
+  footer { margin-top: 32px; font-size: 0.85rem; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Encoded Query Merger</h1>
+  <p class="lede">Paste two ServiceNow encoded queries. You get one query that matches any record either of them would match.</p>
+
+  <div class="field">
+    <label for="a">Query A</label>
+    <textarea id="a" spellcheck="false" placeholder="active=true^priority=1^ORpriority=2^ORDERBYnumber"></textarea>
+  </div>
+  <div class="or">OR</div>
+  <div class="field">
+    <label for="b">Query B</label>
+    <textarea id="b" spellcheck="false" placeholder="assigned_to=javascript:gs.getUserID()^state!=7"></textarea>
+  </div>
+
+  <div class="field output">
+    <label for="out">Merged query</label>
+    <textarea id="out" readonly spellcheck="false" placeholder="The merged query appears here."></textarea>
+    <div class="actions">
+      <button id="copy" disabled>Copy</button>
+      <button id="example" class="ghost">Try an example</button>
+      <button id="clear" class="ghost">Clear</button>
+    </div>
+    <ul class="msgs" id="msgs"></ul>
+    <div class="blocks" id="blocks" hidden>
+      Matches a record if <strong>any</strong> of these blocks matches:
+      <ol id="blockList"></ol>
+    </div>
+  </div>
+
+  <section class="how">
+    <h2>How it works</h2>
+    <p>Why not just join them with <code>^OR</code>? Because in an encoded query <code>^OR</code> only applies to the condition right before it. <code>a^b^ORc^d</code> means <em>a AND (b OR c) AND d</em>, so joining two queries that way quietly changes what they match.</p>
+    <p>The operator that ORs whole queries together is <code>^NQ</code> (new query). The merger splits each input into its <code>^NQ</code> blocks, puts all the blocks one after another, drops exact duplicates, and moves any <code>ORDERBY</code>/<code>GROUPBY</code> clauses to the end. If both queries sort on the same field, Query A's sort wins.</p>
+    <p>You can paste plain queries, URL-encoded ones (<code>%5E</code>), or a whole list URL with <code>sysparm_query=</code>. A trailing <code>^EQ</code> is removed. Escaped carets (<code>^^</code>) inside values are kept as they are.</p>
+    <p>Everything runs in your browser. Nothing is sent anywhere.</p>
+  </section>
+
+  <footer><a href="https://github.com/jessems/encoded-query-merger">Source on GitHub</a></footer>
+</main>
+
+<script type="module">
+  import { merge } from "./merge.js";
+
+  const $ = (id) => document.getElementById(id);
+  const a = $("a"), b = $("b"), out = $("out"), msgs = $("msgs"), copy = $("copy");
+
+  function update() {
+    msgs.replaceChildren();
+    $("blocks").hidden = true;
+    out.value = "";
+    copy.disabled = true;
+    if (!a.value.trim() || !b.value.trim()) return;
+
+    const { result, errors, notes, blocks } = merge(a.value, b.value);
+    for (const [cls, list] of [["err", errors], ["note", notes]]) {
+      for (const text of list) {
+        const li = document.createElement("li");
+        li.className = cls;
+        li.textContent = text;
+        msgs.append(li);
+      }
+    }
+    if (result === null) return;
+    out.value = result;
+    copy.disabled = false;
+    if (blocks.length) {
+      $("blockList").replaceChildren(...blocks.map((block) => {
+        const li = document.createElement("li");
+        const code = document.createElement("code");
+        code.textContent = block;
+        li.append(code);
+        return li;
+      }));
+      $("blocks").hidden = false;
+    }
+  }
+
+  a.addEventListener("input", update);
+  b.addEventListener("input", update);
+
+  copy.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(out.value);
+    copy.textContent = "Copied";
+    setTimeout(() => (copy.textContent = "Copy"), 1200);
+  });
+
+  $("example").addEventListener("click", () => {
+    a.value = "active=true^priority=1^ORpriority=2^ORDERBYnumber";
+    b.value = "assigned_to=javascript:gs.getUserID()^state!=7^NQopened_by=javascript:gs.getUserID()^EQ";
+    update();
+  });
+
+  $("clear").addEventListener("click", () => {
+    a.value = b.value = "";
+    update();
+    a.focus();
+  });
+</script>
+</body>
+</html>
